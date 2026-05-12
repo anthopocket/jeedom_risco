@@ -1,0 +1,32 @@
+{
+  "fr_FR": {
+    "Connexion": "Connexion",
+    "Dernier événement type": "Dernier événement type",
+    "Dernier événement nom": "Dernier événement nom",
+    "Dernier événement heure": "Dernier événement heure",
+    "Dernier événement zone": "Dernier événement zone",
+    "État": "État",
+    "Armé": "Armé",
+    "Armé partiel": "Armé partiel",
+    "En alarme": "En alarme",
+    "Prêt": "Prêt",
+    "Déclenché": "Déclenché",
+    "Armer total": "Armer total",
+    "Désarmer": "Désarmer",
+    "Armer partiel": "Armer partiel",
+    "Armer groupe A": "Armer groupe A",
+    "Armer groupe B": "Armer groupe B",
+    "Armer groupe C": "Armer groupe C",
+    "Armer groupe D": "Armer groupe D",
+    "Nom": "Nom",
+    "Ouvert": "Ouvert",
+    "Alarme": "Alarme",
+    "Bypassé": "Bypassé",
+    "Bypasser": "Bypasser",
+    "Débypasser": "Débypasser",
+    "Dépendances Python non installées (venv absent). Cliquez sur \"Relancer\" dans la section Dépendances.": "Dépendances Python non installées (venv absent). Cliquez sur \"Relancer\" dans la section Dépendances.",
+    "Aucun équipement Risco actif avec une adresse IP configurée.": "Aucun équipement Risco actif avec une adresse IP configurée.",
+    "Le démon ne peut pas démarrer : ": "Le démon ne peut pas démarrer : ",
+    "Démon non démarré après 20 secondes. Vérifiez le log risco.": "Démon non démarré après 20 secondes. Vérifiez le log risco."
+  }
+}

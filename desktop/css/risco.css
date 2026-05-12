@@ -1,0 +1,9 @@
+/* Plugin Risco – styles dashboard */
+.risco-state-armed_away  { color: #d9534f; font-weight: bold; }
+.risco-state-armed_home  { color: #f0ad4e; font-weight: bold; }
+.risco-state-disarmed    { color: #5cb85c; font-weight: bold; }
+.risco-state-triggered   { color: #d9534f; font-weight: bold; animation: blink 0.5s step-end infinite; }
+
+@keyframes blink {
+  50% { opacity: 0; }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "risco",
+  "name": "Risco",
+  "description": "Intégration locale (TCP, sans cloud) des centrales d'alarme Risco : WiComm, WiCommPro, LightSYS, ProsYS. Remontée en temps réel des partitions, zones, sorties et événements.",
+  "licence": "AGPL",
+  "author": "Jeedom",
+  "require": "4.2.0",
+  "category": "security",
+  "changelog": "",
+  "documentation": "",
+  "hasDependency": true,
+  "hasOwnDeamon": true,
+  "maxDependancyInstallTime": 10
+}
