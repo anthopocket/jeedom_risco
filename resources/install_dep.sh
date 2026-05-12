@@ -90,4 +90,6 @@ echo 100 > "$PROGRESS_FILE"
 log "======================================================"
 log " Dépendances installées avec succès !"
 log "======================================================"
+# Supprimer le fichier progress — Jeedom détecte la fin par son absence
+rm -f "$PROGRESS_FILE"
 exit 0
