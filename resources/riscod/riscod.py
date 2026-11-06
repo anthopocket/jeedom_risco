@@ -16,6 +16,8 @@ import socket
 import threading
 import traceback
 import re
+from datetime import datetime
+from collections import deque
 
 try:
     from pyrisco import RiscoLocal
@@ -116,22 +118,31 @@ def send_partition(eq_id, p_id, partition):
     alarmed         = int(getattr(partition, 'alarmed', False))
     ready           = int(getattr(partition, 'ready', True))
     triggered       = int(getattr(partition, 'triggered', False))
+    disarmed        = int(getattr(partition, 'disarmed', not (armed or partially_armed)))
+    arming          = int(getattr(partition, 'arming', False))
+    name            = getattr(partition, 'name', f'Partition {p_id}')
+    groups          = getattr(partition, 'groups', {})
 
     if alarmed:             state = 'triggered'
-    elif armed:             state = 'armed_away'
-    elif partially_armed:   state = 'armed_home'
-    else:                   state = 'disarmed'
+    elif armed:              state = 'armed_away'
+    elif partially_armed:    state = 'armed_home'
+    else:                    state = 'disarmed'
 
     send_callback({
         'type':            'partition',
         'eqLogic_id':      eq_id,
         'partition_id':    p_id,
+        'name':            name,
         'armed':           armed,
         'partially_armed': partially_armed,
         'alarmed':         alarmed,
         'ready':           ready,
         'triggered':       triggered,
         'state':           state,
+        'group_A':         int(groups.get('A', False)),
+        'group_B':         int(groups.get('B', False)),
+        'group_C':         int(groups.get('C', False)),
+        'group_D':         int(groups.get('D', False)),
     })
 
 def send_system(eq_id, system):
@@ -162,6 +173,9 @@ def send_zone(eq_id, z_id, zone):
         'bypassed':   int(zone.bypassed),
         'alarmed':    int(getattr(zone, 'alarmed', False)),
         'armed':      int(getattr(zone, 'armed', False)),
+        'type_id':    int(getattr(zone, 'type', 0)),
+        'partitions': str(getattr(zone, 'partitions', [])),
+        'groups':     str(getattr(zone, 'groups', [])),
     })
 
 
@@ -171,6 +185,7 @@ def send_zone(eq_id, z_id, zone):
 class PanelManager:
 
     REFRESH_INTERVAL = 30   # secondes entre chaque rafraîchissement des partitions
+    MAX_EVENTS       = 5    # nombre maximum d'événements dans l'historique
 
     def __init__(self, panel_conf: dict):
         self.id                  = panel_conf['id']
@@ -186,6 +201,9 @@ class PanelManager:
         self._remove_handlers    = []
         self._running            = False
         self._refresh_task       = None
+        self._prev_partition_state = {}   # {p_id: {armed, partial, alarmed}}
+        self._history_file       = os.path.join(os.path.dirname(args.pid), f'events_{self.id}.json')
+        self._events_history      = deque(self._load_history(), maxlen=self.MAX_EVENTS)
 
     async def connect(self):
         self._running = True
@@ -212,17 +230,38 @@ class PanelManager:
                     except Exception as conn_err:
                         self._remove_handlers.clear()
                         if comm_delay >= MAX_DELAY:
-                            raise
+                            # Tous les delays ont echoue — pause longue puis on repart de delay=1
+                            logger.warning(f"[Panel {self.id}] Tous les delays ont echoue, pause 90s avant retry...")
+                            await asyncio.sleep(90)
+                            comm_delay = self.communication_delay
+                            continue
                         logger.warning(f"[Panel {self.id}] Echec delay={comm_delay}, retry delay={comm_delay+1}...")
                         comm_delay += 1
                         await asyncio.sleep(2)
 
+                self._retry_count = 0  # Reset compteur reconnexion
                 send_callback({'type': 'connexion', 'eqLogic_id': self.id, 'connected': 1})
                 logger.info(f"[Panel {self.id}] Connecté. Partitions={list(self._risco.partitions.keys())} Zones={list(self._risco.zones.keys())[:5]}")
 
                 # ── État initial partitions ────────────────────────────────
+                # Initialiser l'état précédent AVANT d'enregistrer les handlers
+                # pour que on_partition détecte les vraies transitions (et non le boot)
                 for p_id, partition in self._risco.partitions.items():
+                    self._prev_partition_state[p_id] = {
+                        'armed':   bool(getattr(partition, 'armed',           False)),
+                        'partial': bool(getattr(partition, 'partially_armed', False)),
+                        'alarmed': bool(getattr(partition, 'alarmed',         False)),
+                    }
                     send_partition(self.id, p_id, partition)
+
+                # ── Envoyer l'historique existant à Jeedom ────────────────
+                if self._events_history:
+                    lines = list(reversed(self._events_history))
+                    send_callback({
+                        'type':        'events',
+                        'eqLogic_id':  self.id,
+                        'last_events': '\n'.join(lines),
+                    })
 
                 # ── Zones découvertes ─────────────────────────────────────
                 all_zones = list(self._risco.zones.keys())
@@ -278,6 +317,12 @@ class PanelManager:
                         if isinstance(event, Exception):
                             raise event
                         logger.debug(f"[Panel {self.id}] Event queue : {event}")
+                        # Workaround bug pyrisco : ZSTT/PSTT push non gérés
+                        if isinstance(event, str):
+                            if event.startswith('ZSTT'):
+                                await self._handle_zstt(event)
+                            elif event.startswith('PSTT'):
+                                await self._handle_pstt(event)
                     except asyncio.TimeoutError:
                         pass   # normal, on reboucle
 
@@ -288,8 +333,11 @@ class PanelManager:
                 send_callback({'type': 'connexion', 'eqLogic_id': self.id, 'connected': 0})
                 await self._cancel_refresh()
                 if self._running:
-                    logger.info(f"[Panel {self.id}] Reconnexion dans 60 s...")
-                    await asyncio.sleep(60)
+                    # Attente progressive : 60s, 120s, 120s... pour laisser la centrale récupérer
+                    retry_delay = min(120, 60 * (1 + getattr(self, '_retry_count', 0)))
+                    self._retry_count = getattr(self, '_retry_count', 0) + 1
+                    logger.info(f"[Panel {self.id}] Reconnexion dans {retry_delay}s (tentative {self._retry_count})...")
+                    await asyncio.sleep(retry_delay)
 
     async def _refresh_loop(self):
         """Rafraîchit l'état des partitions toutes les REFRESH_INTERVAL secondes."""
@@ -336,19 +384,52 @@ class PanelManager:
             send_zone(self.id, zone_id, zone)
 
         async def on_partition(partition_id, partition):
-            logger.debug(f"[Panel {self.id}] Partition {partition_id} armed={partition.armed}")
+            armed   = bool(getattr(partition, 'armed',           False))
+            partial = bool(getattr(partition, 'partially_armed', False))
+            alarmed = bool(getattr(partition, 'alarmed',         False))
+            prev = self._prev_partition_state.get(partition_id)
+            self._prev_partition_state[partition_id] = {'armed': armed, 'partial': partial, 'alarmed': alarmed}
+            logger.debug(f"[Panel {self.id}] Partition {partition_id} armed={armed} partial={partial} alarmed={alarmed} (prev={prev})")
             send_partition(self.id, partition_id, partition)
+            if prev is None:
+                return   # état initial non encore connu (ne devrait plus arriver)
+            was_armed   = prev['armed']
+            was_partial = prev['partial']
+            was_alarmed = prev['alarmed']
+            pname = getattr(partition, 'name', '') or f'Partition {partition_id}'
+            if alarmed and not was_alarmed:
+                self._add_event(f"🚨 ALARME {pname}")
+            elif armed and not was_armed:
+                self._add_event(f"🔒 Armement total {pname}")
+            elif partial and not was_partial:
+                self._add_event(f"🔒 Armement partiel {pname}")
+            elif (not armed and not partial and not alarmed
+                  and (was_armed or was_partial or was_alarmed)):
+                self._add_event(f"🔓 Désarmement {pname}")
 
         async def on_event(event):
             logger.debug(f"[Panel {self.id}] Événement : {event}")
+            etype = getattr(event, 'type_id', '') or ''
+            ename = getattr(event, 'name', '')    or ''
             send_callback({
                 'type':       'event',
                 'eqLogic_id': self.id,
-                'event_type': getattr(event, 'type_id', ''),
-                'event_name': getattr(event, 'name', ''),
+                'event_type': etype,
+                'event_name': ename,
                 'event_time': str(getattr(event, 'time', '')),
                 'zone_id':    getattr(event, 'zone_id', ''),
             })
+            # N'ajouter à l'historique que les events qui ne sont PAS couverts
+            # par _handle_pstt (arme/desarme) ou _handle_zstt (zone trigger/alarme/bypass)
+            # pour éviter les doublons. On capture seulement les events "système" distincts.
+            SKIP_TYPES = {'ARM', 'DISARM', 'PARTIAL', 'TRIGGER', 'ALARM'}
+            if etype.upper() not in SKIP_TYPES and ename:
+                # Filtrer aussi les events d'armement/désarmement par leur nom
+                skip_keywords = ('arme', 'desarme', 'désarme', 'armement', 'arm', 'disarm',
+                                  'partition', 'zone', 'alarme', 'alarm', 'trigger', 'déclenche')
+                ename_low = ename.lower()
+                if not any(kw in ename_low for kw in skip_keywords):
+                    self._add_event(f"ℹ {ename}")
 
         async def on_error(error):
             err_str = str(error)
@@ -371,6 +452,116 @@ class PanelManager:
         self._remove_handlers.append(r.add_system_handler(on_system))
         self._remove_handlers.append(r.add_event_handler(on_event))
         self._remove_handlers.append(r.add_error_handler(on_error))
+
+    def _load_history(self) -> list:
+        """Charge l'historique des événements depuis le fichier de persistance."""
+        try:
+            if os.path.exists(self._history_file):
+                with open(self._history_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        logger.debug(f"[Panel {self.id}] Historique chargé : {len(data)} événements")
+                        return data[-self.MAX_EVENTS:]
+        except Exception as e:
+            logger.warning(f"[Panel {self.id}] Impossible de charger l'historique : {e}")
+        return []
+
+    def _save_history(self):
+        """Sauvegarde l'historique des événements dans un fichier."""
+        try:
+            with open(self._history_file, 'w', encoding='utf-8') as f:
+                json.dump(list(self._events_history), f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[Panel {self.id}] Impossible de sauvegarder l'historique : {e}")
+
+    def _add_event(self, label: str):
+        """Ajoute un événement à l'historique et envoie la mise à jour."""
+        ts = datetime.now().strftime('%d/%m %H:%M')
+        entry = f"{ts} {label}"
+        self._events_history.append(entry)
+        self._save_history()
+        lines = list(reversed(self._events_history))   # plus récent en tête
+        text  = '\n'.join(lines)
+        send_callback({
+            'type':        'events',
+            'eqLogic_id':  self.id,
+            'last_events': text,
+        })
+        logger.debug(f"[Panel {self.id}] Historique événements : {entry}")
+
+    async def _handle_pstt(self, event: str):
+        try:
+            import re
+            m = re.match(r'PSTT(\d+)=(.+)', event)
+            if not m:
+                return
+            p_id   = int(m.group(1))
+            status = m.group(2)
+            partition = self._risco.partitions.get(p_id)
+            if partition:
+                # Lire l'état AVANT mise à jour
+                was_armed   = bool(getattr(partition, 'armed',           False))
+                was_partial = bool(getattr(partition, 'partially_armed', False))
+                was_alarmed = bool(getattr(partition, 'alarmed',         False))
+                partition.update_status(status)
+                send_partition(self.id, p_id, partition)
+                # Lire l'état APRÈS mise à jour
+                now_armed   = bool(getattr(partition, 'armed',           False))
+                now_partial = bool(getattr(partition, 'partially_armed', False))
+                now_alarmed = bool(getattr(partition, 'alarmed',         False))
+                pname = getattr(partition, 'name', '') or f'Partition {p_id}'
+                logger.debug(f"[Panel {self.id}] PSTT partition {p_id}: was=({was_armed},{was_partial},{was_alarmed}) now=({now_armed},{now_partial},{now_alarmed})")
+                # Détecter les transitions
+                if now_alarmed and not was_alarmed:
+                    self._add_event(f"🚨 ALARME {pname}")
+                elif now_armed and not was_armed:
+                    self._add_event(f"🔒 Armement total {pname}")
+                elif now_partial and not was_partial:
+                    self._add_event(f"🔒 Armement partiel {pname}")
+                elif (not now_armed and not now_partial and not now_alarmed
+                      and (was_armed or was_partial or was_alarmed)):
+                    self._add_event(f"🔓 Désarmement {pname}")
+        except Exception as e:
+            logger.warning(f"[Panel {self.id}] Erreur _handle_pstt : {e}")
+
+    async def _handle_zstt(self, event: str):
+        """Traite manuellement un ZSTT push quand pyrisco ne trouve pas la zone."""
+        try:
+            import re
+            m = re.match(r'ZSTT(\d+)=(.+)', event)
+            if not m:
+                return
+            z_id   = int(m.group(1))
+            status = m.group(2)
+            zone   = self._risco.zones.get(z_id)
+            if zone:
+                was_alarmed   = getattr(zone, 'alarmed',    False)
+                was_triggered = getattr(zone, 'triggered',  False)
+                was_bypassed  = getattr(zone, 'bypassed',   False)
+                zone.update_status(status)
+                send_zone(self.id, z_id, zone)
+                zname = getattr(zone, 'name', f'Z{z_id}') or f'Z{z_id}'
+                now_alarmed   = getattr(zone, 'alarmed',    False)
+                now_triggered = getattr(zone, 'triggered',  False)
+                now_bypassed  = getattr(zone, 'bypassed',   False)
+                # Vérifier si au moins une partition de la zone est armée
+                zone_armed = bool(getattr(zone, 'armed', False))
+                if now_alarmed and not was_alarmed:
+                    self._add_event(f"🚨 Alarme {zname}")
+                elif now_triggered and not was_triggered and zone_armed:
+                    # Ne loguer la détection que si la zone est armée (évite le bruit)
+                    self._add_event(f"📡 Détection {zname}")
+                elif not now_triggered and was_triggered and zone_armed:
+                    self._add_event(f"✅ Retour calme {zname}")
+                elif now_bypassed and not was_bypassed:
+                    self._add_event(f"⏭ Bypass {zname}")
+                elif not now_bypassed and was_bypassed:
+                    self._add_event(f"↩ Débypass {zname}")
+                logger.debug(f"[Panel {self.id}] ZSTT manuel zone {z_id} status={status}")
+            else:
+                logger.debug(f"[Panel {self.id}] ZSTT zone {z_id} inconnue de pyrisco, ignoré")
+        except Exception as e:
+            logger.warning(f"[Panel {self.id}] Erreur _handle_zstt : {e}")
 
     async def sync_zones(self):
         if not self._risco:
