@@ -193,14 +193,18 @@ class risco extends eqLogic {
             case 'zone':
                 $eq = eqLogic::byId((int)$_data['eqLogic_id']);
                 if (!is_object($eq)) return;
-                $prefix = 'zone_' . $_data['zone_id'] . '_';
-                self::_updateCmd($eq, $prefix . 'triggered', (int)$_data['triggered']);
-                self::_updateCmd($eq, $prefix . 'bypassed',  (int)$_data['bypassed']);
-                self::_updateCmd($eq, $prefix . 'alarmed',   (int)$_data['alarmed']);
-                self::_updateCmd($eq, $prefix . 'armed',     (int)$_data['armed']);
+                $z      = (int)$_data['zone_id'];
+                $prefix = 'zone_' . $z . '_';
+                self::_updateCmd($eq, $prefix . 'triggered',  (int)$_data['triggered']);
+                self::_updateCmd($eq, $prefix . 'bypassed',   (int)$_data['bypassed']);
+                self::_updateCmd($eq, $prefix . 'alarmed',    (int)$_data['alarmed']);
+                self::_updateCmd($eq, $prefix . 'armed',      (int)$_data['armed']);
                 if (isset($_data['name']) && $_data['name'] !== '') {
                     self::_updateCmd($eq, $prefix . 'name', $_data['name']);
                 }
+                if (isset($_data['type_id']))    self::_updateCmd($eq, $prefix . 'type_id',   (int)$_data['type_id']);
+                if (isset($_data['partitions']))  self::_updateCmd($eq, $prefix . 'partitions', $_data['partitions']);
+                if (isset($_data['groups']))      self::_updateCmd($eq, $prefix . 'groups',     $_data['groups']);
                 break;
 
             case 'partition':
@@ -213,6 +217,13 @@ class risco extends eqLogic {
                 self::_updateCmd($eq, $prefix . 'ready',           (int)$_data['ready']);
                 self::_updateCmd($eq, $prefix . 'triggered',       (int)$_data['triggered']);
                 self::_updateCmd($eq, $prefix . 'state',           $_data['state'] ?? 'disarmed');
+                if (isset($_data['name']) && $_data['name'] !== '') {
+                    self::_updateCmd($eq, $prefix . 'name', $_data['name']);
+                }
+                self::_updateCmd($eq, $prefix . 'group_A', (int)($_data['group_A'] ?? 0));
+                self::_updateCmd($eq, $prefix . 'group_B', (int)($_data['group_B'] ?? 0));
+                self::_updateCmd($eq, $prefix . 'group_C', (int)($_data['group_C'] ?? 0));
+                self::_updateCmd($eq, $prefix . 'group_D', (int)($_data['group_D'] ?? 0));
                 break;
 
             case 'event':
@@ -222,6 +233,12 @@ class risco extends eqLogic {
                 self::_updateCmd($eq, 'last_event_name',    $_data['event_name'] ?? '');
                 self::_updateCmd($eq, 'last_event_time',    $_data['event_time'] ?? '');
                 self::_updateCmd($eq, 'last_event_zone_id', $_data['zone_id']    ?? '');
+                break;
+
+            case 'events':
+                $eq = eqLogic::byId((int)$_data['eqLogic_id']);
+                if (!is_object($eq)) return;
+                self::_updateCmd($eq, 'last_events', $_data['last_events'] ?? '');
                 break;
 
             case 'discovered':
@@ -296,6 +313,7 @@ class risco extends eqLogic {
         $this->_checkInfoCmd('last_event_name',    __('Dernier événement nom', __FILE__),  'string', 0);
         $this->_checkInfoCmd('last_event_time',    __('Dernier événement heure', __FILE__),'string', 0);
         $this->_checkInfoCmd('last_event_zone_id', __('Dernier événement zone', __FILE__), 'string', 0);
+        $this->_checkInfoCmd('last_events',        __('Derniers événements', __FILE__),    'string', 0);
 
         // Système
         $this->_checkInfoCmd('system_name',                   __('Nom centrale', __FILE__),              'string', 0);
@@ -313,12 +331,17 @@ class risco extends eqLogic {
         for ($p = 1; $p <= $nb_partitions; $p++) {
             $pfx = "partition_{$p}_";
             $lbl = "P{$p} ";
-            $this->_checkInfoCmd($pfx . 'state',           $lbl . __('État', __FILE__),         'string', 0);
-            $this->_checkInfoCmd($pfx . 'armed',           $lbl . __('Armé', __FILE__),          'binary', 0);
-            $this->_checkInfoCmd($pfx . 'partially_armed', $lbl . __('Armé partiel', __FILE__),  'binary', 0);
-            $this->_checkInfoCmd($pfx . 'alarmed',         $lbl . __('En alarme', __FILE__),     'binary', 0);
-            $this->_checkInfoCmd($pfx . 'ready',           $lbl . __('Prêt', __FILE__),          'binary', 0);
-            $this->_checkInfoCmd($pfx . 'triggered',       $lbl . __('Déclenché', __FILE__),     'binary', 0);
+            $this->_checkInfoCmd($pfx . 'name',           $lbl . __('Nom', __FILE__),           'string', 0);
+            $this->_checkInfoCmd($pfx . 'state',           $lbl . __('État', __FILE__),           'string', 0);
+            $this->_checkInfoCmd($pfx . 'armed',           $lbl . __('Armé', __FILE__),           'binary', 0);
+            $this->_checkInfoCmd($pfx . 'partially_armed', $lbl . __('Armé partiel', __FILE__),   'binary', 0);
+            $this->_checkInfoCmd($pfx . 'alarmed',         $lbl . __('En alarme', __FILE__),      'binary', 0);
+            $this->_checkInfoCmd($pfx . 'ready',           $lbl . __('Prêt', __FILE__),           'binary', 0);
+            $this->_checkInfoCmd($pfx . 'triggered',       $lbl . __('Déclenché', __FILE__),      'binary', 0);
+            $this->_checkInfoCmd($pfx . 'group_A',         $lbl . __('Groupe A armé', __FILE__),  'binary', 0);
+            $this->_checkInfoCmd($pfx . 'group_B',         $lbl . __('Groupe B armé', __FILE__),  'binary', 0);
+            $this->_checkInfoCmd($pfx . 'group_C',         $lbl . __('Groupe C armé', __FILE__),  'binary', 0);
+            $this->_checkInfoCmd($pfx . 'group_D',         $lbl . __('Groupe D armé', __FILE__),  'binary', 0);
             $this->_checkActionCmd($pfx . 'arm',           $lbl . __('Armer total', __FILE__),   'other');
             $this->_checkActionCmd($pfx . 'disarm',        $lbl . __('Désarmer', __FILE__),      'other');
             $this->_checkActionCmd($pfx . 'partial_arm',   $lbl . __('Armer partiel', __FILE__), 'other');
@@ -337,11 +360,14 @@ class risco extends eqLogic {
             $z   = (int)$z;
             $pfx = "zone_{$z}_";
             $lbl = "Z{$z} ";
-            $this->_checkInfoCmd($pfx . 'name',      $lbl . __('Nom', __FILE__),     'string', 0);
-            $this->_checkInfoCmd($pfx . 'triggered', $lbl . __('Ouvert', __FILE__),  'binary', 0);
-            $this->_checkInfoCmd($pfx . 'alarmed',   $lbl . __('Alarme', __FILE__),  'binary', 0);
-            $this->_checkInfoCmd($pfx . 'bypassed',  $lbl . __('Bypassé', __FILE__), 'binary', 0);
-            $this->_checkInfoCmd($pfx . 'armed',     $lbl . __('Armé', __FILE__),    'binary', 0);
+            $this->_checkInfoCmd($pfx . 'name',       $lbl . __('Nom', __FILE__),        'string', 0);
+            $this->_checkInfoCmd($pfx . 'triggered',  $lbl . __('Ouvert', __FILE__),    'binary', 0);
+            $this->_checkInfoCmd($pfx . 'alarmed',    $lbl . __('Alarme', __FILE__),    'binary', 0);
+            $this->_checkInfoCmd($pfx . 'bypassed',   $lbl . __('Bypassé', __FILE__),   'binary', 0);
+            $this->_checkInfoCmd($pfx . 'armed',      $lbl . __('Armé', __FILE__),      'binary', 0);
+            $this->_checkInfoCmd($pfx . 'type_id',    $lbl . __('Type', __FILE__),      'string', 0);
+            $this->_checkInfoCmd($pfx . 'partitions', $lbl . __('Partitions', __FILE__), 'string', 0);
+            $this->_checkInfoCmd($pfx . 'groups',     $lbl . __('Groupes', __FILE__),   'string', 0);
             if ($allow_bypass) {
                 $this->_checkActionCmd($pfx . 'bypass',   $lbl . __('Bypasser', __FILE__),   'other');
                 $this->_checkActionCmd($pfx . 'unbypass', $lbl . __('Débypasser', __FILE__), 'other');
